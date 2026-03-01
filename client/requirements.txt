@@ -1,0 +1,10 @@
+fastapi
+uvicorn[standard]
+websockets
+mss
+opencv-python
+PySide6
+numpy
+vosk
+pyttsx3
+sounddevice

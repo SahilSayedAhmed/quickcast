@@ -1,0 +1,133 @@
+Do these in order every time you want a session:
+Step 1 — Start the server
+Open VS Code terminal, make sure venv is active, then:
+cd C:\Users\ASUS\Desktop\quickcast\server
+uvicorn main:app --host 0.0.0.0 --port 8000
+Leave this terminal open the entire time. Never close it during a session.
+Step 2 — Find your IP (if you don't know it)
+Open a new terminal tab and run:
+ipconfig  (192.168.0.177)
+Look for Wireless LAN adapter Wi-Fi → IPv4 Address → something like 192.168.1.105
+Step 3 — Open QuickCast
+Double-click QuickCast.exe in dist\ folder. Your username and IP will be auto-filled. Just click Connect.
+Step 4 — Tell your friends
+
+"Server is up! My IP is 192.168.0.XXX — open QuickCast and connect."
+
+
+Complete Flow — Every Session
+
+Terminal 1 — Start Server
+cd C:\Users\ASUS\Desktop\quickcast\server
+venv\Scripts\activate
+uvicorn main:app --host 0.0.0.0 --port 8000
+🔴 Never close this terminal
+
+Terminal 2 — Start ngrok
+cd C:\Users\ASUS\Desktop\quickcast
+.\ngrok.exe http 8000
+```
+🔴 **Never close this terminal**
+
+Copy the URL it shows:
+```
+https://abc123.ngrok-free.app
+
+Terminal 3 — Start YOUR client
+cd C:\Users\ASUS\Desktop\quickcast\client
+venv\Scripts\activate
+python app.py
+```
+Connect with `127.0.0.1` + your username
+
+---
+
+### Send friends:
+```
+unpsychopathic-kailee-caliginously.ngrok-free.app
+```
+They open `QuickCast.exe` → paste URL → type username → Connect
+
+---
+
+### Verify everyone connected:
+Open browser:
+```
+http://127.0.0.1:8000/
+Should show all usernames in online_users ✅
+
+
+What to type in Server IP box:
+
+WiFi / office network 192.168.1.105 (your LAN IP)
+Different network / mobile dataunpsychopathic-kailee-caliginously.ngrok-free.app
+You (server PC always) 127.0.0.1
+Friend on YOUR hotspot192.168.1.105 (your LAN IP)
+Friend on THEIR own hotspotunpsychopathic-kailee-caliginously.ngrok-free.app
+
+
+
+COMMAND TO SEE WHAT THE AI HEARS :
+cd C:\Users\ASUS\Desktop\quickcast\client
+python -c "
+import sounddevice as sd
+import vosk, json, sys
+vosk.SetLogLevel(-1)
+model = vosk.Model('vosk-model-small-en-us-0.15')
+rec = vosk.KaldiRecognizer(model, 16000)
+print('Speak now... (say check this, your name, yes, stop etc)')
+print('Press Ctrl+C to stop')
+with sd.RawInputStream(samplerate=16000, blocksize=2400, dtype='int16', channels=1) as s:
+    while True:
+        data, _ = s.read(2400)
+        if rec.AcceptWaveform(bytes(data)):
+            r = json.loads(rec.Result())
+            if r.get('text'):
+                print('HEARD:', r['text'])
+"
+
+
+
+
+🔔 Wake phrases (trigger AI):
+"check this"      "check it"        "check"
+"quickcast"       "quick cast"      "quick cats"      "quickest"
+"share this"      "share screen"    "start share"     "start sharing"
+"cast this"       "cast screen"     "send screen"     "send this"
+"hey quickcast"   "hey quick"       "hey cast"
+"check his"       "czech this"      "check the"       "jack this"
+"cast"            "share"           "broadcast"       "present"
+"jet this"        "tech this"       "chuck"           "chess"
+"see this"        "see it"          "see"
+
+
+
+
+
+✅ Yes / Confirm:
+"yes"    "yeah"    "yep"    "yup"    "sure"    "ok"    "okay"
+"do it"  "confirm" "go ahead" "go"   "correct" "absolutely"
+"definitely"  "of course"  "please"  "affirmative"
+"right"  "true"   "great"
+
+
+
+
+
+
+❌ No / Cancel:
+"no"    "nope"    "nah"    "cancel"   "stop"    "nevermind"
+"never mind"  "don't"  "abort"  "quit"  "exit"
+"wrong"  "not"  "negative"  "back"  "undo"
+
+
+
+
+
+
+⏹️ Stop sharing:
+"stop sharing"   "stop share"    "stop screen"
+"stop"           "cancel"        "end share"      "end sharing"
+"finish sharing" "finish"        "done sharing"   "done"
+"close share"    "close screen"  "exit share"
+"return screen"  "return"
