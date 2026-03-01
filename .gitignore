@@ -1,0 +1,8 @@
+@"
+client/dist/
+client/build/
+client/__pycache__/
+server/__pycache__/
+*.pyc
+venv/
+"@ | Out-File -FilePath .gitignore -Encoding utf8
