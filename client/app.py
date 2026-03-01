@@ -37,7 +37,7 @@ except ImportError:
     UPDATER_AVAILABLE = False
 
 # ── Default server address ─────────────────────────────────────────────────────
-DEFAULT_SERVER_IP   = "127.0.0.1"
+DEFAULT_SERVER_IP   = "https://quickcast-kfg0.onrender.com"
 DEFAULT_SERVER_PORT = 8000
 
 # ── Config file ────────────────────────────────────────────────────────────────
