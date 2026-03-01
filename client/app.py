@@ -37,7 +37,7 @@ except ImportError:
     UPDATER_AVAILABLE = False
 
 # ── Default server address ─────────────────────────────────────────────────────
-DEFAULT_SERVER_IP   = "https://quickcast-kfg0.onrender.com"
+DEFAULT_SERVER_IP   = "127.0.0.1"
 DEFAULT_SERVER_PORT = 8000
 
 # ── Config file ────────────────────────────────────────────────────────────────
@@ -91,6 +91,7 @@ class MainWindow(QMainWindow):
         self._connected     = False
         self._is_internet   = False
         self._online_users  = []
+        self._user_id_map   = {}  # {1: 'BOB', 2: 'NASH'}
         self.ai             = None
 
         # Signals
@@ -317,10 +318,15 @@ class MainWindow(QMainWindow):
         if not selected:
             QMessageBox.information(self, "Select a User", "Click a user in the Online Users list first.")
             return
-        target = selected[0].text().replace("  (you)", "").strip()
-        if target == self._username:
+        raw = selected[0].text()
+        # Strip number prefix e.g. "1)  BOB" → "BOB", "👤  Sahil  (you)" → skip
+        if "(you)" in raw:
             QMessageBox.warning(self, "Invalid Target", "You cannot share your screen with yourself.")
             return
+        # Extract username after "N)  "
+        import re as _re
+        match = _re.match(r"^[0-9]+\)\s+(.+)$", raw.strip())
+        target = match.group(1).strip() if match else raw.strip()
         self._send_json({"type": "start_share", "target": target})
         self._sender      = ScreenSender(self._ws.send, is_internet=self._is_internet)
         self._sender.loop = self._ws_loop
@@ -328,6 +334,9 @@ class MainWindow(QMainWindow):
         self.send_btn.setEnabled(False)
         self.stop_send_btn.setEnabled(True)
         self._update_status(f"📤  Sending screen to {target}…")
+        # Tell AI we are now sharing so it can respond to "stop sharing"
+        if self.ai:
+            self.ai.notify_sharing_started(target)
 
     def _on_stop_sending(self):
         self._send_json({"type": "stop_share"})
@@ -335,6 +344,9 @@ class MainWindow(QMainWindow):
         self.stop_send_btn.setEnabled(False)
         self.send_btn.setEnabled(True)
         self._update_status(f"✅  Connected as {self._username}")
+        # Tell AI sharing has stopped
+        if self.ai:
+            self.ai.notify_sharing_stopped()
 
     def _stop_sender_thread(self):
         if self._sender:
@@ -359,17 +371,35 @@ class MainWindow(QMainWindow):
         self.send_btn.setEnabled(True)
         self.stop_send_btn.setEnabled(False)
         self._update_status(f"✅  Connected as {self._username}")
+        # Tell AI sharing has stopped
+        if self.ai:
+            self.ai.notify_sharing_stopped()
 
     # ── UI helpers ─────────────────────────────────────────────────────────────
     def _update_user_list(self, users: list):
         self._online_users = users
-        self.user_list.clear()
+        # Build numbered mapping — assign IDs based on order (excluding self)
+        # e.g. {1: "BOB", 2: "NASH", 3: "ALICE"}
+        self._user_id_map = {}
+        uid = 1
         for user in users:
-            item = QListWidgetItem(user)
+            if user != self._username:
+                self._user_id_map[uid] = user
+                uid += 1
+
+        self.user_list.clear()
+        # Give everyone a number including self
+        all_uid = 1
+        for user in users:
+            user_id = next((k for k, v in self._user_id_map.items() if v == user), None)
             if user == self._username:
+                item = QListWidgetItem(f"{all_uid})  {user}  (you)")
                 item.setForeground(Qt.gray)
-                item.setText(f"{user}  (you)")
+            else:
+                item = QListWidgetItem(f"{user_id})  {user}")
             self.user_list.addItem(item)
+            all_uid += 1
+
         others = [u for u in users if u != self._username]
         self.send_btn.setEnabled(self._connected and len(others) > 0)
         self.connect_btn.setEnabled(not self._connected)
@@ -394,6 +424,7 @@ class MainWindow(QMainWindow):
                 send_screen      = self.ai_send_screen,
                 stop_sharing     = self.ai_stop_sharing,
                 get_online_users = self.get_online_users,
+                get_user_id_map  = self.get_user_id_map,
             )
             self.ai.start()
         except Exception as e:
@@ -401,6 +432,10 @@ class MainWindow(QMainWindow):
 
     def get_online_users(self) -> list:
         return [u for u in self._online_users if u != self._username]
+
+    def get_user_id_map(self) -> dict:
+        """Return {1: 'BOB', 2: 'NASH'} for AI to use."""
+        return self._user_id_map
 
     def ai_send_screen(self, target: str):
         if not self._connected or target not in self._online_users:

@@ -4,7 +4,7 @@ import site
 
 block_cipher = None
 
-# Find vosk package location
+# ── Find vosk package DLLs ────────────────────────────────────────────────────
 vosk_path = None
 for sp in site.getsitepackages():
     candidate = os.path.join(sp, "vosk")
@@ -12,24 +12,32 @@ for sp in site.getsitepackages():
         vosk_path = candidate
         break
 
-# Collect vosk binaries and data files
-vosk_datas = []
+vosk_datas    = []
 vosk_binaries = []
 if vosk_path:
     for f in os.listdir(vosk_path):
         full = os.path.join(vosk_path, f)
         if f.endswith(('.dll', '.so', '.pyd')):
             vosk_binaries.append((full, "vosk"))
-        elif not f.endswith('.py') and not f.endswith('.pyc'):
-            if os.path.isfile(full):
-                vosk_datas.append((full, "vosk"))
+        elif not f.endswith('.py') and not f.endswith('.pyc') and os.path.isfile(full):
+            vosk_datas.append((full, "vosk"))
+
+# ── Vosk model folder ─────────────────────────────────────────────────────────
+MODEL_NAME = "vosk-model-small-en-us-0.15"
+MODEL_PATH = os.path.join(os.path.dirname(os.path.abspath(".")), "client", MODEL_NAME)
+if not os.path.isdir(MODEL_PATH):
+    MODEL_PATH = os.path.join(os.path.abspath("."), MODEL_NAME)
+
+print(f"Bundling vosk model from: {MODEL_PATH}")
+print(f"Model exists: {os.path.isdir(MODEL_PATH)}")
 
 a = Analysis(
     ["app.py"],
     pathex=["."],
     binaries=vosk_binaries,
     datas=vosk_datas + [
-        ("version.txt", "."),   # Bundle version.txt inside exe
+        (MODEL_PATH, MODEL_NAME),   # Bundle entire model folder inside exe
+        ("version.txt", "."),       # Bundle version file
     ],
     hiddenimports=[
         "vosk",

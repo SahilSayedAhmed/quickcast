@@ -95,11 +95,12 @@ class QuickCastAI:
     Communicates with Qt UI only via signals (thread-safe).
     """
 
-    def __init__(self, window, send_screen, stop_sharing, get_online_users):
+    def __init__(self, window, send_screen, stop_sharing, get_online_users, get_user_id_map=None):
         self.window             = window
         self._send_screen       = send_screen
         self._stop_sharing      = stop_sharing
         self._get_online_users  = get_online_users
+        self._get_user_id_map   = get_user_id_map or (lambda: {})
 
         # State machine
         self.state              = IDLE
@@ -151,6 +152,27 @@ class QuickCastAI:
         self._running = False
         self._cancel_timeout()
 
+    def notify_sharing_started(self, target: str):
+        """
+        Called by app.py when screen sharing starts MANUALLY.
+        Puts AI into SHARING state so it can respond to 'stop sharing'.
+        """
+        self.selected_user = target
+        self._transition_to(SHARING)
+        self.window.ai_status_signal.emit(
+            f"📤  AI: Sharing with {target} — say 'Stop sharing' to end"
+        )
+        log.info(f"AI notified: manual sharing started with {target}")
+
+    def notify_sharing_stopped(self):
+        """
+        Called by app.py when screen sharing stops (manually or via AI).
+        Resets AI back to IDLE.
+        """
+        if self.state != IDLE:
+            self._reset_to_idle()
+            log.info("AI notified: sharing stopped, back to IDLE")
+
     # ══════════════════════════════════════════════════════════════════════════
     # VOSK MODEL LOADER
     # ══════════════════════════════════════════════════════════════════════════
@@ -165,38 +187,37 @@ class QuickCastAI:
             return False
 
         import sys
-
         MODEL_NAME = "vosk-model-small-en-us-0.15"
 
-        # Build search list — most reliable locations FIRST
+        # Search in order — most reliable first
         search_dirs = []
 
-        # 1. Same folder as the exe — works for everyone!
-        search_dirs.append(os.path.dirname(os.path.abspath(sys.executable)))
+        # 1. _MEIPASS — THIS is where PyInstaller extracts bundled files
+        #    This is the CORRECT location when model is bundled inside exe
+        if hasattr(sys, "_MEIPASS"):
+            search_dirs.append(sys._MEIPASS)
 
-        # 2. HARDCODED fallback — only works on Sahil's machine
-        search_dirs.append(os.path.join("C:/Users/ASUS/Desktop/quickcast/client"))
-
-        # 2. Next to the exe (dist folder — for when model is placed there)
+        # 2. Next to the exe — works when model folder placed beside exe
         search_dirs.append(os.path.dirname(os.path.abspath(sys.executable)))
 
         # 3. Current working directory
         search_dirs.append(os.path.abspath(os.getcwd()))
 
-        # 4. Next to ai_mode.py (terminal mode)
+        # 4. Next to ai_mode.py — works when running from terminal
         try:
             search_dirs.append(os.path.dirname(os.path.abspath(__file__)))
         except Exception:
             pass
 
-        # 5. _MEIPASS last (PyInstaller temp — only if bundled with --add-data)
-        if hasattr(sys, "_MEIPASS"):
-            search_dirs.append(sys._MEIPASS)
+        # 5. Hardcoded fallback for Sahil's machine
+        search_dirs.append("C:/Users/ASUS/Desktop/quickcast/client")
 
         for base in search_dirs:
             path = os.path.join(base, MODEL_NAME)
+            log.info(f"Looking for model at: {path}")
             if os.path.isdir(path):
                 try:
+                    from vosk import Model
                     self._model = Model(path)
                     log.info(f"✅  Model loaded from: {path}")
                     return True
@@ -204,9 +225,9 @@ class QuickCastAI:
                     log.error(f"Load failed at {path}: {e}")
                     continue
 
-        msg = f"⚠️  AI: Put vosk-model-small-en-us-0.15 in: C:/Users/ASUS/Desktop/quickcast/client/"
-        log.error("Vosk model not found in any location")
-        self.window.ai_status_signal.emit(msg)
+        self.window.ai_status_signal.emit(
+            "⚠️  AI: Vosk model not found — contact support"
+        )
         return False
 
 
@@ -330,7 +351,13 @@ class QuickCastAI:
                 self.window.ai_status_signal.emit(
                     "🎙️  AI: Who should I share with? Say a name."
                 )
-                self._speak("QuickCast ready. Who should I share with?")
+                users = self._get_online_users()
+                id_map = self._get_user_id_map()
+                if users and id_map:
+                    options = ", ".join(f"{uid} for {name}" for uid, name in id_map.items())
+                    self._speak(f"Who should I share with? Say a name or number. {options}")
+                else:
+                    self._speak("QuickCast ready. Who should I share with?")
                 self._start_timeout()
 
         # ── AWAITING_TARGET ───────────────────────────────────────────────────
@@ -428,6 +455,7 @@ class QuickCastAI:
         Smart username extractor from spoken text.
 
         Tries (in order):
+        0. Number match — "one", "1", "user one" → first user
         1. Exact match after stripping filler words
         2. Substring match
         3. Word-by-word match
@@ -438,6 +466,21 @@ class QuickCastAI:
             return None
 
         text = text.lower().strip()
+
+        # 0. NUMBER MATCH — user says "one", "two", "1", "2" etc.
+        number_words = {
+            "one": 1, "two": 2, "three": 3, "four": 4, "five": 5,
+            "six": 6, "seven": 7, "eight": 8, "nine": 9, "ten": 10,
+            "1": 1, "2": 2, "3": 3, "4": 4, "5": 5,
+            "6": 6, "7": 7, "8": 8, "9": 9, "10": 10,
+            "first": 1, "second": 2, "third": 3, "fourth": 4, "fifth": 5,
+        }
+        id_map = self._get_user_id_map()
+        for word in text.split():
+            if word in number_words:
+                uid = number_words[word]
+                if uid in id_map:
+                    return id_map[uid]
 
         # Strip filler words
         words = [w for w in re.split(r'\s+', text) if w not in FILLER_WORDS]

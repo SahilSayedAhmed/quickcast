@@ -59,6 +59,7 @@ class ScreenReceiverWindow(QMainWindow):
         self.frame_label = QLabel("Waiting for frames…")
         self.frame_label.setAlignment(Qt.AlignCenter)
         self.frame_label.setStyleSheet("background: #000; color: #aaa; font-size: 18px;")
+        self.frame_label.setScaledContents(False)  # We handle scaling manually for quality
         layout.addWidget(self.frame_label, stretch=1)
 
         # Stop button sits at the bottom
@@ -92,12 +93,14 @@ class ScreenReceiverWindow(QMainWindow):
         pixmap = QPixmap.fromImage(qt_image)
 
         # Scale to fit the label while keeping aspect ratio
-        pixmap = pixmap.scaled(
-            self.frame_label.size(),
+        # Use SmoothTransformation for best quality rendering
+        label_size = self.frame_label.size()
+        scaled = pixmap.scaled(
+            label_size,
             Qt.KeepAspectRatio,
             Qt.SmoothTransformation,
         )
-        self.frame_label.setPixmap(pixmap)
+        self.frame_label.setPixmap(scaled)
 
     def _on_stop_clicked(self):
         """User clicked 'Stop Receiving' — notify the main app."""

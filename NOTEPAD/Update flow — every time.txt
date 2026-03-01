@@ -1,0 +1,29 @@
+Update flow — every time:
+Step 1 — Make your code changes
+Step 2 — Update version number
+Open client\version.txt → change:
+1.0.0  →  1.1.0
+Step 3 — Rebuild exe:
+powershellcd C:\Users\ASUS\Desktop\quickcast\client
+pyinstaller QuickCast.spec
+Step 4 — Push to GitHub:
+powershellcd C:\Users\ASUS\Desktop\quickcast
+git add .
+git commit -m "QuickCast v1.1.0 - describe your changes"
+git push origin main
+```
+
+### Step 5 — Create new GitHub Release:
+1. Go to `github.com/SahilSayedAhmed/quickcast`
+2. Click **Releases** → **Create new release**
+3. Tag: `v1.1.0`
+4. Title: `QuickCast v1.1.0`
+5. Upload new `client\dist\QuickCast.exe`
+6. Click **Publish release** ✅
+
+---
+
+## That's it! Then automatically:
+```
+Render sees git push → auto-deploys server ✅
+Friends open app → see update popup → click Yes → auto-updates ✅
