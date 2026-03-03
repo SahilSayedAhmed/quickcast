@@ -32,9 +32,9 @@ app.add_middleware(CORSMiddleware, allow_origins=["*"], allow_methods=["*"], all
 connections: dict[str, WebSocket] = {}
 
 # Multiple sessions supported:
-# { sender_username -> receiver_username }
-# Example: { "LYNX": "BOB", "CHARLIE": "DAVE" }
-active_sessions: dict[str, str] = {}
+# { sender_username -> [receiver1, receiver2, ...] }
+# Example: { "LYNX": ["BOB", "DAVE"], "CHARLIE": ["ALICE"] }
+active_sessions: dict[str, list] = {}
 
 
 # ── Helpers ────────────────────────────────────────────────────────────────────
@@ -44,7 +44,7 @@ async def broadcast_user_list():
     message = json.dumps({
         "type": "user_list",
         "users": list(connections.keys()),
-        "sessions": active_sessions,   # e.g. {"LYNX": "BOB"} so UI can show who's busy
+        "sessions": active_sessions,
     })
     for ws in connections.values():
         try:
@@ -62,8 +62,8 @@ async def notify(username: str, payload: dict):
 
 def find_session_as_receiver(username: str) -> str | None:
     """Return the sender's username if this user is currently a receiver, else None."""
-    for sender, receiver in active_sessions.items():
-        if receiver == username:
+    for sender, receivers in active_sessions.items():
+        if username in receivers:
             return sender
     return None
 
@@ -74,6 +74,14 @@ def find_session_as_receiver(username: str) -> str | None:
 async def websocket_endpoint(ws: WebSocket):
     await ws.accept()
     username: str | None = None
+    # Send periodic pings to keep connection alive during idle periods
+    async def keepalive():
+        while True:
+            await asyncio.sleep(30)
+            try:
+                await ws.send_text('{"type":"ping"}')
+            except Exception:
+                break
 
     try:
         # ── Step 1: Wait for the "join" message ───────────────────────────────
@@ -99,6 +107,9 @@ async def websocket_endpoint(ws: WebSocket):
         await ws.send_text(json.dumps({"type": "joined", "username": username}))
         await broadcast_user_list()
 
+        # Start keepalive task for this connection
+        ping_task = asyncio.create_task(keepalive())
+
         # ── Step 2: Main message loop ─────────────────────────────────────────
         while True:
             message = await ws.receive()
@@ -108,8 +119,8 @@ async def websocket_endpoint(ws: WebSocket):
                 frame_bytes = message["bytes"]
 
                 # Forward frame only if this user is an active sender
-                receiver_name = active_sessions.get(username)
-                if receiver_name:
+                receivers = active_sessions.get(username, [])
+                for receiver_name in receivers:
                     receiver_ws = connections.get(receiver_name)
                     if receiver_ws:
                         try:
@@ -124,10 +135,14 @@ async def websocket_endpoint(ws: WebSocket):
 
                 # ── Start a new share session ─────────────────────────────────
                 if msg_type == "start_share":
-                    target = data.get("target")
+                    # Support both single target (legacy) and multiple targets
+                    target  = data.get("target")
+                    targets = data.get("targets", [])
+                    if target and target not in targets:
+                        targets.append(target)
 
-                    if target not in connections:
-                        await notify(username, {"type": "error", "message": f"User '{target}' is not online."})
+                    if not targets:
+                        await notify(username, {"type": "error", "message": "No target specified."})
                         continue
 
                     # Check if THIS user is already sending
@@ -135,19 +150,29 @@ async def websocket_endpoint(ws: WebSocket):
                         await notify(username, {"type": "error", "message": "You are already sharing your screen."})
                         continue
 
-                    # Check if TARGET is already receiving from someone else
-                    existing_sender = find_session_as_receiver(target)
-                    if existing_sender:
-                        await notify(username, {"type": "error", "message": f"'{target}' is already receiving from '{existing_sender}'."})
+                    # Validate all targets
+                    valid_targets = []
+                    for t in targets:
+                        if t not in connections:
+                            await notify(username, {"type": "error", "message": f"User '{t}' is not online."})
+                            continue
+                        existing_sender = find_session_as_receiver(t)
+                        if existing_sender:
+                            await notify(username, {"type": "error", "message": f"'{t}' is already receiving from '{existing_sender}'."})
+                            continue
+                        valid_targets.append(t)
+
+                    if not valid_targets:
                         continue
 
-                    # Register the new session
-                    active_sessions[username] = target
-                    log.info(f"🖥️  Session started: {username} → {target}  |  all sessions: {active_sessions}")
+                    # Register the new session with all valid targets
+                    active_sessions[username] = valid_targets
+                    log.info(f"🖥️  Session started: {username} → {valid_targets}")
 
-                    await notify(username, {"type": "share_started", "role": "sender",   "target": target})
-                    await notify(target,   {"type": "share_started", "role": "receiver", "sender": username})
-                    await broadcast_user_list()  # Update everyone so they see who's busy
+                    await notify(username, {"type": "share_started", "role": "sender", "targets": valid_targets})
+                    for t in valid_targets:
+                        await notify(t, {"type": "share_started", "role": "receiver", "sender": username})
+                    await broadcast_user_list()
 
                 # ── Stop a share session ──────────────────────────────────────
                 elif msg_type == "stop_share":
@@ -158,6 +183,10 @@ async def websocket_endpoint(ws: WebSocket):
     except Exception as e:
         log.error(f"Unexpected error for {username}: {e}")
     finally:
+        try:
+            ping_task.cancel()
+        except Exception:
+            pass
         if username and username in connections:
             del connections[username]
 
@@ -175,10 +204,11 @@ async def _end_session(username: str, broadcast: bool = True):
     """
     # Case 1: This user is the SENDER
     if username in active_sessions:
-        receiver = active_sessions.pop(username)
-        log.info(f"⏹️  Session ended: {username} → {receiver}")
+        receivers = active_sessions.pop(username)
+        log.info(f"⏹️  Session ended: {username} → {receivers}")
         await notify(username, {"type": "share_stopped"})
-        await notify(receiver, {"type": "share_stopped"})
+        for r in receivers:
+            await notify(r, {"type": "share_stopped"})
         if broadcast:
             await broadcast_user_list()
         return
@@ -186,8 +216,13 @@ async def _end_session(username: str, broadcast: bool = True):
     # Case 2: This user is the RECEIVER
     sender = find_session_as_receiver(username)
     if sender:
-        active_sessions.pop(sender)
-        log.info(f"⏹️  Session ended (receiver left): {sender} → {username}")
+        receivers = active_sessions.get(sender, [])
+        receivers = [r for r in receivers if r != username]
+        if receivers:
+            active_sessions[sender] = receivers  # remove just this receiver
+        else:
+            active_sessions.pop(sender)          # no receivers left, end session
+        log.info(f"⏹️  Receiver left: {sender} → {username}")
         await notify(sender,   {"type": "share_stopped"})
         await notify(username, {"type": "share_stopped"})
         if broadcast:

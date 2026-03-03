@@ -72,6 +72,8 @@ class AppSignals(QObject):
     ai_raise_window           = Signal()
     # Auto updater signal
     update_available          = Signal(str, str)  # version, download_url
+    # Reset connect button signal
+    connection_reset          = Signal()
 
 
 # ── Main window ────────────────────────────────────────────────────────────────
@@ -89,6 +91,7 @@ class MainWindow(QMainWindow):
         self._sender        = None
         self._receiver_window = None
         self._connected     = False
+        self._reconnect     = True   # auto-reconnect flag
         self._is_internet   = False
         self._online_users  = []
         self._user_id_map   = {}  # {1: 'BOB', 2: 'NASH'}
@@ -115,6 +118,7 @@ class MainWindow(QMainWindow):
         # Updater signal
         self.signals.update_available.connect(self._on_update_available)
         self.update_available_signal = self.signals.update_available
+        self.signals.connection_reset.connect(self._on_connection_reset)
 
         self._build_ui()
         self._load_saved_config()
@@ -160,10 +164,11 @@ class MainWindow(QMainWindow):
         root.addWidget(conn_box)
 
         # Online users
-        users_box = QGroupBox("Online Users  (click to select target)")
+        users_box = QGroupBox("Online Users  (tick to select — multiple allowed)")
         users_layout = QVBoxLayout(users_box)
         self.user_list = QListWidget()
         self.user_list.setFixedHeight(130)
+        self.user_list.setSelectionMode(QListWidget.MultiSelection)
         users_layout.addWidget(self.user_list)
         root.addWidget(users_box)
 
@@ -238,6 +243,11 @@ class MainWindow(QMainWindow):
         self.config_hint.setText(f"✅  Saved as '{username}' — auto-fills next time")
         self.connect_btn.setEnabled(False)
         self.connect_btn.setText("Connecting…")
+        self.connect_btn.setStyleSheet(
+            "QPushButton { border-radius: 6px; font-size: 14px; color: white; background: #2980b9; }"
+            "QPushButton:hover { background: #3498db; }"
+            "QPushButton:disabled { background: #555; color: #999; }"
+        )
         self._update_status("Connecting…")
 
         threading.Thread(target=self._run_ws_loop, args=(server_ip, username), daemon=True).start()
@@ -247,11 +257,33 @@ class MainWindow(QMainWindow):
         asyncio.set_event_loop(loop)
         self._ws_loop = loop
         try:
-            loop.run_until_complete(self._ws_client(host, username))
+            loop.run_until_complete(self._ws_client_with_reconnect(host, username))
         except Exception as e:
             self.signals.status_changed.emit(f"Connection failed: {e}")
         finally:
             loop.close()
+
+    async def _ws_client_with_reconnect(self, host: str, username: str):
+        """Wrapper that auto-reconnects if connection drops."""
+        import asyncio
+        retry_delay = 5
+        attempt     = 0
+        while self._reconnect:
+            try:
+                attempt += 1
+                if attempt > 1:
+                    self.signals.status_changed.emit(f"🔄  Reconnecting… (attempt {attempt})")
+                await self._ws_client(host, username)
+            except Exception:
+                pass
+            if self._reconnect:
+                for i in range(retry_delay, 0, -1):
+                    if not self._reconnect:
+                        break
+                    self.signals.status_changed.emit(
+                        f"⚠️  Disconnected — retrying in {i}s…"
+                    )
+                    await asyncio.sleep(1)
 
     async def _ws_client(self, host: str, username: str):
         host = host.strip().rstrip("/")
@@ -270,10 +302,11 @@ class MainWindow(QMainWindow):
             async with websockets.connect(
                 uri,
                 additional_headers = extra_headers,
-                ping_interval      = 20,
-                ping_timeout       = 30,
+                ping_interval      = 30,    # ping every 30s to keep alive
+                ping_timeout       = 60,    # wait 60s for pong
                 close_timeout      = 10,
                 max_size           = 10_000_000,
+                open_timeout       = 60,
             ) as ws:
                 self._ws = ws
                 await ws.send(json.dumps({"type": "join", "username": username}))
@@ -311,32 +344,37 @@ class MainWindow(QMainWindow):
         finally:
             self._ws        = None
             self._connected = False
+            self._stop_sender_thread()
+            # Reset UI so user can reconnect without reopening app
+            self.signals.connection_reset.emit()
 
     # ── Screen sharing ─────────────────────────────────────────────────────────
     def _on_send_screen(self):
-        selected = self.user_list.selectedItems()
-        if not selected:
-            QMessageBox.information(self, "Select a User", "Click a user in the Online Users list first.")
-            return
-        raw = selected[0].text()
-        # Strip number prefix e.g. "1)  BOB" → "BOB", "👤  Sahil  (you)" → skip
-        if "(you)" in raw:
-            QMessageBox.warning(self, "Invalid Target", "You cannot share your screen with yourself.")
-            return
-        # Extract username after "N)  "
         import re as _re
-        match = _re.match(r"^[0-9]+\)\s+(.+)$", raw.strip())
-        target = match.group(1).strip() if match else raw.strip()
-        self._send_json({"type": "start_share", "target": target})
+        # Collect all checked users
+        targets = []
+        for i in range(self.user_list.count()):
+            item = self.user_list.item(i)
+            if item.checkState() == Qt.Checked:
+                raw   = item.text()
+                match = _re.match(r"^[0-9]+\)\s+(.+)$", raw.strip())
+                name  = match.group(1).strip() if match else raw.strip()
+                targets.append(name)
+
+        if not targets:
+            QMessageBox.information(self, "Select Users", "Tick at least one user to share with.")
+            return
+
+        self._send_json({"type": "start_share", "targets": targets})
         self._sender      = ScreenSender(self._ws.send, is_internet=self._is_internet)
         self._sender.loop = self._ws_loop
         self._sender.start()
         self.send_btn.setEnabled(False)
         self.stop_send_btn.setEnabled(True)
-        self._update_status(f"📤  Sending screen to {target}…")
-        # Tell AI we are now sharing so it can respond to "stop sharing"
+        names = ", ".join(targets)
+        self._update_status(f"📤  Sharing with {names}…")
         if self.ai:
-            self.ai.notify_sharing_started(target)
+            self.ai.notify_sharing_started(names)
 
     def _on_stop_sending(self):
         self._send_json({"type": "stop_share"})
@@ -388,17 +426,19 @@ class MainWindow(QMainWindow):
                 uid += 1
 
         self.user_list.clear()
-        # Give everyone a number including self
-        all_uid = 1
+        num = 1
         for user in users:
             user_id = next((k for k, v in self._user_id_map.items() if v == user), None)
             if user == self._username:
-                item = QListWidgetItem(f"{all_uid})  {user}  (you)")
+                item = QListWidgetItem(f"{num})  {user}  (you)")
                 item.setForeground(Qt.gray)
+                item.setFlags(item.flags() & ~Qt.ItemIsEnabled)  # disable self
             else:
                 item = QListWidgetItem(f"{user_id})  {user}")
+                item.setFlags(item.flags() | Qt.ItemIsUserCheckable | Qt.ItemIsEnabled)
+                item.setCheckState(Qt.Unchecked)
             self.user_list.addItem(item)
-            all_uid += 1
+            num += 1
 
         others = [u for u in users if u != self._username]
         self.send_btn.setEnabled(self._connected and len(others) > 0)
@@ -437,16 +477,21 @@ class MainWindow(QMainWindow):
         """Return {1: 'BOB', 2: 'NASH'} for AI to use."""
         return self._user_id_map
 
-    def ai_send_screen(self, target: str):
-        if not self._connected or target not in self._online_users:
+    def ai_send_screen(self, targets):
+        """targets can be a string or list of strings."""
+        if isinstance(targets, str):
+            targets = [targets]
+        targets = [t for t in targets if t in self._online_users]
+        if not self._connected or not targets:
             return
-        self._send_json({"type": "start_share", "target": target})
+        self._send_json({"type": "start_share", "targets": targets})
         self._sender      = ScreenSender(self._ws.send, is_internet=self._is_internet)
         self._sender.loop = self._ws_loop
         self._sender.start()
         self.send_btn.setEnabled(False)
         self.stop_send_btn.setEnabled(True)
-        self._update_status(f"📤  AI sharing to {target}…")
+        names = ", ".join(targets)
+        self._update_status(f"📤  AI sharing to {names}…")
 
     def ai_stop_sharing(self):
         self._send_json({"type": "stop_share"})
@@ -462,6 +507,19 @@ class MainWindow(QMainWindow):
         self.raise_()
         self.activateWindow()
         self.showNormal()
+
+    # ── Connection reset ───────────────────────────────────────────────────────
+    def _on_connection_reset(self):
+        """Reset UI when connection drops — no need to reopen app."""
+        self.connect_btn.setEnabled(True)
+        self.connect_btn.setText("🔄  Try Again")
+        self.connect_btn.setStyleSheet(
+            "QPushButton { border-radius: 6px; font-size: 14px; color: white; background: #e67e22; }"
+            "QPushButton:hover { background: #f39c12; }"
+        )
+        self.send_btn.setEnabled(False)
+        self.stop_send_btn.setEnabled(False)
+        self.user_list.clear()
 
     # ── Auto updater ───────────────────────────────────────────────────────────
     def _start_updater(self):
@@ -499,6 +557,7 @@ class MainWindow(QMainWindow):
 
     # ── Close ──────────────────────────────────────────────────────────────────
     def closeEvent(self, event):
+        self._reconnect = False  # stop auto-reconnect on intentional close
         if self.ai:
             self.ai.stop()
         self._stop_sender_thread()

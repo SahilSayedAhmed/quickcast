@@ -105,6 +105,7 @@ class QuickCastAI:
         # State machine
         self.state              = IDLE
         self.selected_user      = None
+        self.selected_users     = []
         self._state_timer       = None
 
         # Threading
@@ -151,6 +152,43 @@ class QuickCastAI:
     def stop(self):
         self._running = False
         self._cancel_timeout()
+
+    def _match_multiple_usernames(self, text: str) -> list:
+        """
+        Match multiple usernames from spoken text.
+        e.g. "one and two" → ["BOB", "NASH"]
+        e.g. "one two three" → ["BOB", "NASH", "ALICE"]
+        e.g. "bob and nash" → ["BOB", "NASH"]
+        """
+        # Try single match first
+        single = self._match_username(text)
+        if single:
+            # Also check if more names mentioned
+            results = [single]
+            # Remove matched part and check for more
+            remaining = text.lower()
+            for word in ["and", "also", "with", "plus"]:
+                remaining = remaining.replace(word, " ")
+            # Check each word for additional matches
+            id_map  = self._get_user_id_map()
+            online  = self._get_online_users()
+            number_words = {
+                "one":1,"two":2,"three":3,"four":4,"five":5,
+                "six":6,"seven":7,"eight":8,"nine":9,"ten":10,
+                "1":1,"2":2,"3":3,"4":4,"5":5,
+                "6":6,"7":7,"8":8,"9":9,"10":10,
+            }
+            for word in remaining.split():
+                if word in number_words:
+                    uid = number_words[word]
+                    if uid in id_map and id_map[uid] not in results:
+                        results.append(id_map[uid])
+                else:
+                    for user in online:
+                        if word in user.lower() and user not in results:
+                            results.append(user)
+            return results
+        return []
 
     def notify_sharing_started(self, target: str):
         """
