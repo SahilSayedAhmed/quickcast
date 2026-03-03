@@ -196,9 +196,10 @@ async def _end_session(username: str, broadcast: bool = True):
 
 # ── Health check ───────────────────────────────────────────────────────────────
 @app.get("/")
+@app.head("/")
 async def health():
     return {
         "status": "running",
         "online_users": list(connections.keys()),
-        "active_sessions": active_sessions,   # e.g. {"LYNX": "BOB", "CHARLIE": "DAVE"}
+        "active_sessions": active_sessions,
     }
